@@ -1,5 +1,5 @@
 section .data
-  pathname db "./openme.txt", 0   ; filename (terminated with null character)
+  pathname db "./Infector", 0   ; filename (terminated with null character)
 
 section .bss
 buffer: resb 4                    ; create a buffer and reserve 4 bytes
@@ -9,6 +9,7 @@ global _start
 
 _start:
   call read_file
+  call check_ELF_file
   call write_output
 
   ; Finish the execution successfully
@@ -50,6 +51,33 @@ read_file:
   jl error              ; if rax < 0, an error occurred (jump to error)
 
   ret                   ; return to caller
+
+; -----------------------------
+; Function: check_ELF_file
+; This function checks if the file starts with the ELF magic number (0x7f 45 4c 46).
+; If the file is not an ELF file, it jumps to the error handler.
+; -----------------------------
+check_ELF_file:
+  mov al, byte [buffer]  ; load the first byte of the buffer into al
+  cmp al, 0x7f           ; compare with 0x7f (ELF magic number prefix)
+  jne error              ; if not equal, jump to error
+
+  ; Check the second byte (should be 'E' = 0x45)
+  mov al, byte [buffer + 1]  ; load the second byte of the buffer
+  cmp al, 0x45           ; compare with 'E' (0x45 in hex)
+  jne error              ; if not equal, jump to error
+
+  ; Check the third byte (should be 'L' = 0x4C)
+  mov al, byte [buffer + 2]  ; load the third byte of the buffer
+  cmp al, 0x4C           ; compare with 'L' (0x4C in hex)
+  jne error              ; if not equal, jump to error
+
+  ; Check the fourth byte (should be 'F' = 0x46)
+  mov al, byte [buffer + 3]  ; load the fourth byte of the buffer
+  cmp al, 0x46           ; compare with 'F' (0x46 in hex)
+  jne error              ; if not equal, jump to error
+
+  ret                    ; return to caller if ELF file is valid
 
 ; -----------------------------
 ; Function: write_output
