@@ -1,13 +1,15 @@
 section .data
-  pathname db "./Infector", 0   ; filename (terminated with null character)
+  pathname db "./", 0   ; filename (terminated with null character)
 
 section .bss
 buffer: resb 4                    ; create a buffer and reserve 4 bytes
+statbuf resb 144                  ; reserve space for the stat struct
 
 section .text
 global _start
 
 _start:
+  call check_if_directory
   call read_file
   call check_ELF_file
   call write_output
@@ -51,6 +53,30 @@ read_file:
   jl error              ; if rax < 0, an error occurred (jump to error)
 
   ret                   ; return to caller
+
+
+; -----------------------------
+; Function: check_if_directory
+; This function checks if the file is a directory using the 'stat' syscall.
+; If the file is a directory, it jumps to the error handler.
+; -----------------------------
+check_if_directory:
+  mov rax, 4                      ; syscall number for 'stat'
+  mov rdi, pathname                ; pointer to the filename (first argument for 'stat')
+  mov rsi, statbuf                 ; pointer to the stat buffer (second argument)
+  syscall
+
+  ; Check if the syscall was successful
+  cmp rax, 0
+  jl error                        ; if rax < 0, an error occurred (jump to error)
+
+  ; Check the file type: directory (S_IFDIR = 0x4000)
+  mov eax, [statbuf + 0]           ; st_mode is the first field in the stat structure
+  and eax, 0xF000                  ; extract the file type bits
+  cmp eax, 0x4000                  ; compare with S_IFDIR (directory type)
+  je error                         ; if it's a directory, jump to error
+
+  ret                              ; return to caller if not a directory
 
 ; -----------------------------
 ; Function: check_ELF_file
