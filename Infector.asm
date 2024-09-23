@@ -1,96 +1,217 @@
 section .data
-  pathname db "./Infector", 0   ; filename (terminated with null character)
+  pathname db ".", 0                   ; le répertoire actuel
+  elf_magic db 0x7f, 0x45, 0x4c, 0x46  ; les numéros magiques ELF (0x7f 'E' 'L' 'F')
+  is_elf_msg db " is an ELF file", 0xA, 0  ; message pour les fichiers ELF
+  not_elf_msg db " is not an ELF file", 0xA, 0 ; message pour les fichiers non-ELF
+  err db "erreur", 0xA, 0              ; message erreur
 
 section .bss
-buffer: resb 4                    ; create a buffer and reserve 4 bytes
+  buffer resb 4096                     ; tampon pour les entrées de répertoire (non initialisé, donc dans .bss)
+  temp_file resb 256                   ; tampon pour les noms de fichiers temporaires (non initialisé)
 
 section .text
 global _start
 
 _start:
-  call read_file
-  call check_ELF_file
-  call write_output
+  ; Ouvre le répertoire actuel et liste son contenu
+  call list_directory
 
-  ; Finish the execution successfully
-  mov rax, 60           ; syscall number for 'exit'
-  xor rdi, rdi          ; exit code 0 (success)
-  syscall
+  ; Quitte le programme avec succès
+  mov rax, 60                          ; numéro de syscall pour 'exit'
+  xor rdi, rdi                         ; code de sortie 0 (succès)
+  syscall                              ; appel du kernel (exit)
 
 error:
-  ; Handle errors (exit with code 1 if something goes wrong)
-  mov rax, 60           ; syscall number for 'exit'
-  mov rdi, 1            ; exit code 1 (indicating an error)
-  syscall
+  ; Gère les erreurs (sortie avec le code 1 si quelque chose tourne mal)
+  mov rdi, err
+  mov rsi, 20
+  call write_message
+
+  mov rax, 60                          ; numéro de syscall pour 'exit'
+  mov rdi, 1                           ; code de sortie 1 (erreur)
+  syscall                              ; exécute le syscall (exit)
 
 ; -----------------------------
-; Function: read_file
-; This function opens a file and reads its content into the buffer.
-; It uses system calls 'read' and 'open for file operations and handles errors.
+; Fonction: list_directory
+; Cette fonction lit les entrées du répertoire et traite chaque fichier.
+; -----------------------------
+list_directory:
+  ; Ouvre le répertoire courant
+  mov rax, 2                           ; numéro de syscall pour 'open' (2 pour 'openat')
+  mov rdi, pathname                    ; pointeur vers le nom du répertoire
+  xor rsi, rsi                         ; flags = 0 (O_RDONLY)
+  syscall                              ; exécute le syscall
+
+  ; Vérifie si l'ouverture du répertoire a réussi
+  cmp rax, 0
+  jl error                             ; si rax < 0, une erreur s'est produite (saut vers error)
+  mov rdi, rax                         ; descripteur de fichier du répertoire
+
+  ; Lit les entrées du répertoire avec getdents
+  mov rax, 0x4e                          ; numéro de syscall pour 'getdents' (78 en x86_64)
+  mov rsi, buffer                      ; tampon pour stocker les entrées de répertoire
+  mov rdx, 4096                        ; taille du tampon
+  syscall                              ; exécute le syscall
+
+  ; print output of getdents
+  ;mov rdi, buffer
+  ;mov rsi, 4096
+  ;call write_message
+
+  ; Vérifie si le syscall a réussi
+  cmp rax, 0
+  jl error                             ; si rax < 0, une erreur s'est produite (saut vers error)
+  
+  ; Traite chaque entrée
+  mov rbx, buffer                      ; rbx pointe vers le début du tampon
+  call process_entry                   ; appel de la fonction pour traiter les entrées
+  ret                                  ; retour au programme principal
+
+; -----------------------------
+; Fonction: process_entry
+; Cette fonction traite chaque entrée de répertoire lue dans le tampon.
+; -----------------------------
+process_entry:
+  ; Obtenir le nom du fichier
+  mov rdi, rbx                          ; rbx pointe vers l'entrée actuelle dans le tampon
+  add rdi, 18                           ; décalage vers le nom de fichier dans la structure dirent
+  ;call write_message
+
+  mov rsi, temp_file                    ; déplacer vers le tampon temp_file
+  call copy_filename                    ; copier le nom de fichier dans temp_file
+
+  ; Imprimer le nom du fichier
+  mov rdi, rsi
+  mov rsi, 10
+  call write_message                   ; imprimer le nom de fichier sur stdout
+  ;call write_filename                   ; imprimer le nom de fichier sur stdout
+  
+  ; Ouvre et vérifie si le fichier est un fichier ELF
+  call read_file
+  ;call write_message_ELF
+  call check_ELF_file
+
+  ; Passe à l'entrée suivante du répertoire
+  movzx eax, word [rbx + 4]             ; charge la valeur de d_reclen (2 octets) dans rax
+  add rbx, rax                          ; ajoute d_reclen à rbx pour passer à l'entrée suivante
+
+  ; Vérifie si nous avons atteint la fin du tampon
+  lea rsi, [buffer + rdx]               ; charge l'adresse effective de buffer + rdx dans rsi
+  cmp rbx, rsi                          ; compare rbx avec la fin du tampon
+  jb process_entry                      ; si pas encore à la fin, continue de traiter
+
+  ret                                   ; retourne au programme principal
+
+; -----------------------------
+; Fonction: copy_filename
+; Cette fonction copie le nom du fichier de l'entrée du répertoire dans le tampon temp_file.
+; Entrées:
+;   rdi = source (nom du fichier dans le tampon)
+;   rsi = destination (tampon temp_file)
+; -----------------------------
+copy_filename:
+  mov rcx, 256                         ; limite à 256 caractères
+copy_loop:
+  lodsb                                ; charge le prochain octet de la source dans al
+  stosb                                ; stocke al dans la destination
+  cmp al, 0                            ; vérifie s'il s'agit du terminateur nul
+  je done_copying
+  loop copy_loop                       ; répète jusqu'à ce que tous les caractères soient copiés
+done_copying:
+  ret                                  ; retourne à l'appelant
+
+; -----------------------------
+; Fonction: read_file
+; Cette fonction ouvre un fichier et lit ses 4 premiers octets dans le tampon.
+; Entrées:
+;   temp_file contient le nom du fichier à ouvrir
 ; -----------------------------
 read_file:
-  ; Open the file
-  mov rax, 2           ; syscall number for 'open'
-  mov rdi, pathname     ; pointer to the filename (first argument for 'open')
-  xor rsi, rsi          ; flags = 0 (O_RDONLY = 0) for read-only mode
-  syscall
+  ; Ouvre le fichier
+  mov rax, 2                           ; numéro de syscall pour 'open'
+  mov rdi, temp_file                   ; pointeur vers le nom de fichier (1er argument de 'open')
+  xor rsi, rsi                         ; flags = 0 (O_RDONLY = 0) pour mode lecture seule
+  syscall                              ; exécute le syscall
 
-  ; Check if the file was opened successfully
+  ; Vérifie si le fichier a été ouvert avec succès
   cmp rax, 0
-  jl error              ; if rax < 0, an error occurred (jump to error)
+  jl error                             ; si rax < 0, une erreur s'est produite (saut vers error)
 
-  ; Read the content of the file
-  mov rdi, rax          ; move file descriptor returned by 'open' to rdi
-  mov rax, 0            ; syscall number for 'read'
-  mov rsi, buffer       ; buffer to store the file content
-  mov rdx, 4            ; number of bytes to read (4 bytes)
-  syscall
+  ; Lit les 4 premiers octets du fichier
+  mov rdi, rax                         ; déplace le descripteur de fichier renvoyé par 'open' dans rdi
+  mov rax, 0                           ; numéro de syscall pour 'read'
+  mov rsi, buffer                      ; tampon pour stocker le contenu du fichier
+  mov rdx, 4                           ; nombre d'octets à lire (4 octets)
+  syscall                              ; exécute le syscall
 
-  ; Check if the read was successful
+
+  ; Vérifie si la lecture a réussi
   cmp rax, 0
-  jl error              ; if rax < 0, an error occurred (jump to error)
+  jl error                             ; si rax < 0, une erreur s'est produite (saut vers error)
 
-  ret                   ; return to caller
+  ret                                  ; retourne à l'appelant
 
 ; -----------------------------
-; Function: check_ELF_file
-; This function checks if the file starts with the ELF magic number (0x7f 45 4c 46).
-; If the file is not an ELF file, it jumps to the error handler.
+; Fonction: check_ELF_file
+; Cette fonction vérifie si le fichier commence par le numéro magique ELF (0x7f 45 4c 46).
+; Si le fichier n'est pas un fichier ELF, il passe au suivant.
 ; -----------------------------
 check_ELF_file:
-  mov al, byte [buffer]  ; load the first byte of the buffer into al
-  cmp al, 0x7f           ; compare with 0x7f (ELF magic number prefix)
-  jne error              ; if not equal, jump to error
+  ; Compare les quatre premiers octets du tampon avec le numéro magique ELF
+  mov eax, [buffer]                    ; charge les 4 premiers octets du fichier
+  cmp eax, [elf_magic]                 ; compare avec le numéro magique ELF
+  jne not_elf                          ; si différent, ce n'est pas un fichier ELF
 
-  ; Check the second byte (should be 'E' = 0x45)
-  mov al, byte [buffer + 1]  ; load the second byte of the buffer
-  cmp al, 0x45           ; compare with 'E' (0x45 in hex)
-  jne error              ; if not equal, jump to error
+  ; Le fichier est un fichier ELF, imprime un message
+  mov rdi, temp_file                   ; pointeur vers le nom du fichier dans temp_file
+  call write_filename                  ; écrit le nom du fichier
+  mov rdi, is_elf_msg                  ; message "is an ELF file"
+  call write_message                   ; écrit le message
+  ret                                  ; retourne à l'appelant
 
-  ; Check the third byte (should be 'L' = 0x4C)
-  mov al, byte [buffer + 2]  ; load the third byte of the buffer
-  cmp al, 0x4C           ; compare with 'L' (0x4C in hex)
-  jne error              ; if not equal, jump to error
-
-  ; Check the fourth byte (should be 'F' = 0x46)
-  mov al, byte [buffer + 3]  ; load the fourth byte of the buffer
-  cmp al, 0x46           ; compare with 'F' (0x46 in hex)
-  jne error              ; if not equal, jump to error
-
-  ret                    ; return to caller if ELF file is valid
+not_elf:
+  ; Le fichier n'est pas un fichier ELF, imprime un message
+  mov rdi, temp_file                   ; pointeur vers le nom du fichier dans temp_file
+  call write_filename                  ; écrit le nom du fichier
+  mov rdi, not_elf_msg                 ; message "is not an ELF file"
+  call write_message                   ; écrit le message
+  ret                                  ; retourne à l'appelant
 
 ; -----------------------------
-; Function: write_output
-; This function writes the content of the buffer to the standard output (stdout).
-; It uses the 'write' syscall to display the data on the terminal.
+; Fonction: write_filename
+; Cette fonction écrit le nom du fichier sur la sortie standard.
 ; -----------------------------
-write_output:
-  ; Write the buffer content to stdout
-  mov rax, 1            ; syscall number for 'write'
-  mov rdi, 1            ; file descriptor for stdout (1)
-  mov rsi, buffer       ; buffer containing the data to write
-  mov rdx, 4            ; number of bytes to write (4 bytes)
-  syscall
+write_filename:
+  ; Trouver la longueur réelle de la chaîne dans temp_file (jusqu'au null)
+  mov rsi, temp_file                   ; pointer vers temp_file
+  xor rcx, rcx                         ; compteur de longueur = 0
 
-  ret                   ; return to caller
+find_null:
+  cmp byte [rsi + rcx], 0              ; comparer chaque octet avec 0 (null)
+  je write_now                         ; si null trouvé, passer à l'écriture
+  inc rcx                              ; sinon, incrémenter le compteur
+  cmp rcx, 256                         ; limite à 256 caractères
+  jb find_null                         ; continuer jusqu'à atteindre la fin ou 256 octets
 
+write_now:
+  ; Écrit le nom du fichier sur stdout
+  mov rax, 1                           ; numéro de syscall pour 'write'
+  mov rdi, 1                           ; descripteur de fichier pour stdout (1)
+  mov rsi, temp_file                   ; pointer vers temp_file pour l'écriture
+  mov rdx, rcx                         ; longueur réelle du fichier (jusqu'au null)
+  syscall                              ; exécuter le syscall
+  ret                                  ; retourner à l'appelant
+
+; -----------------------------
+; Fonction: write_message
+; Cette fonction écrit un message (soit message ELF soit non-ELF) sur la sortie standard.
+; -----------------------------
+write_message:
+  ; Écrit le message sur stdout
+  mov rdx, rsi
+  mov rsi, rdi
+  mov rax, 1                           ; numéro de syscall pour 'write'
+  mov rdi, 1                           ; descripteur de fichier pour stdout (1)
+  ;mov rdx, 10                         ; imprime jusqu'à 256 octets (bien que le message soit plus court)
+  syscall                              ; exécute le syscall
+  ret
