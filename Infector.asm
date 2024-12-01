@@ -1,18 +1,30 @@
 section .data
   pathname db "./ls", 0   ; filename (terminated with null character)
+
+  error_msg db "Il y a un probleme", 0xA ; Message when e_entry matches
+  error_msg_len equ $ - error_msg           ; Length of the match message
+
   match_msg db "Entry Point Match", 0xA ; Message when e_entry matches
   match_len equ $ - match_msg           ; Length of the match message
 
-  mismatch_msg db "Entry Point Mismatch", 0xA ; Message when e_entry does not match
-  mismatch_len equ $ - mismatch_msg          ; Length of the mismatch message
+  matchPHNUM_msg db "PHNUM Match", 0xA ; Message when e_entry matches
+  matchPHNUM_len equ $ - matchPHNUM_msg           ; Length of the match message
+
+  note_msg db "PT_NOTE segment FOUND", 0xA ; Message to print
+  note_len equ $ - note_msg         ; Message length
+
+  headerMessage db "Im in a PH segment", 0xA ; Message to print
+  headerMessagelen equ $ - headerMessage         ; Message length
 
 
 section .bss
-ELF_Header: resb 64                    ; create a variable for the ELF Header and reserve 64 bytes
-e_entry_point: resb 8 
-e_phoff: resb 8 
-e_phentsize: resb 2
-e_phnum: resb 2
+ELF_Header: resb 64                    ; ELF header buffer
+ph_entry: resb 64                      ; Program header entry buffer
+e_entry_point: resb 8                  ; Entry point field
+e_phoff: resb 8                        ; Program header offset field
+e_phentsize: resb 2                    ; Program header entry size field
+e_phnum: resb 2                        ; Number of program headers field
+fd resq 1                              ; File descriptor
 statbuf resb 144                  ; reserve space for the stat struct
 
 section .text
@@ -23,6 +35,8 @@ _start:
   call check_ELF_file
   call save_Important_field_ELF_Header
   call compare_entry_point
+  ;call compare_e_phnum
+  call find_PT_NOTE
   call write_output
 
   ; Finish the execution successfully
@@ -32,6 +46,13 @@ _start:
 
 error:
   ; Handle errors (exit with code 1 if something goes wrong)
+  ; Print error Message
+  mov rax, 1              ; syscall: write
+  mov rdi, 1              ; stdout
+  lea rsi, [error_msg] ; Pointer to entry point
+  mov rdx, error_msg_len              ; Write 8 bytes
+  syscall
+
   mov rax, 60           ; syscall number for 'exit'
   mov rdi, 1            ; exit code 1 (indicating an error)
   syscall
@@ -51,6 +72,8 @@ read_file:
   ; Check if the file was opened successfully
   cmp rax, 0
   jl error              ; if rax < 0, an error occurred (jump to error)
+
+  mov [fd], rax         ; Save file descriptor to `fd`
 
   ; Read the content of the file
   mov rdi, rax          ; move file descriptor returned by 'open' to rdi
@@ -109,43 +132,140 @@ save_Important_field_ELF_Header:
   mov qword [e_phoff], rax       ; Save it to the `e_phoff` variable
 
   ; Save e_phentsize (Program Header Entry Size)
-  movzx rax, word [ELF_Header + 0x2C] ; Extract the 16-bit entry size
+  movzx rax, word [ELF_Header + 0x36] ; Extract the 16-bit entry size
   mov word [e_phentsize], ax       ; Save it to the `e_phentsize` variable
 
   ; Save e_phnum (Number of Program Header Entries)
-  movzx rax, word [ELF_Header + 0x2E] ; Extract the 16-bit number of entries
+  movzx rax, word [ELF_Header + 0x38] ; Extract the 16-bit number of entries
   mov word [e_phnum], ax          ; Save it to the `e_phnum` variable
 
   ret                             ; Return to the caller
 
 
 compare_entry_point:
-    ; Compare the saved e_entry_point with a hardcoded value (e.g., 0x5130)
-    mov rax, qword [e_entry_point] ; Load the saved e_entry_point
-    cmp rax, 0x5130               ; Compare it with the expected value
-    je entry_point_match          ; If equal, jump to match label
-    jne entry_point_mismatch      ; Otherwise, jump to mismatch label
+  ; Compare the saved e_entry_point with a hardcoded value (e.g., 0x5130)
+  mov rax, qword [e_entry_point] ; Load the saved e_entry_point
+  cmp rax, 0x5130               ; Compare it with the expected value
+  je entry_point_match          ; If equal, jump to match label
+
+compare_e_phnum:
+    movzx rax, word [e_phnum]   ; Load e_phnum (2 bytes) into RAX, zero-extend it
+    cmp rax, 13                ; Compare with 13 (0x0D)
+    ;je e_phnum_match            ; If equal, jump to match label
+
+  ret
 
 entry_point_match:
-    ; Do something when entry point matches
-    ; For example, print "Entry Point Match"
-    mov rax, 1                    ; syscall: write
-    mov rdi, 1                    ; stdout
-    lea rsi, [match_msg]          ; Pointer to the "Match" message
-    mov rdx, match_len            ; Length of the message
-    syscall
-    ret
+  ; Do something when entry point matches
+  ; For example, print "Entry Point Match"
+  mov rax, 1                    ; syscall: write
+  mov rdi, 1                    ; stdout
+  lea rsi, [match_msg]          ; Pointer to the "Match" message
+  mov rdx, match_len            ; Length of the message
+  syscall
+  ret
 
-entry_point_mismatch:
-    ; Do something when entry point does not match
-    ; For example, print "Entry Point Mismatch"
-    mov rax, 1                    ; syscall: write
-    mov rdi, 1                    ; stdout
-    lea rsi, [mismatch_msg]       ; Pointer to the "Mismatch" message
-    mov rdx, mismatch_len         ; Length of the message
-    syscall
-    ret
+e_phnum_match:
+  ; Do something when entry point matches
+  ; For example, print "Entry Point Match"
+  mov rax, 1                    ; syscall: write
+  mov rdi, 1                    ; stdout
+  lea rsi, [matchPHNUM_msg]          ; Pointer to the "Match" message
+  mov rdx, matchPHNUM_len            ; Length of the message
+  syscall
+  ret
 
+; -----------------------------
+; Function: find_PT_NOTE
+; Loop through all program headers to find a PT_NOTE segment.
+; -----------------------------
+find_PT_NOTE:
+  mov rbx, [e_phoff]                ; Start of program header table
+  movzx rcx, word [e_phnum]         ; Number of program headers
+  movzx rdx, word [e_phentsize]     ; Size of each program header
+
+loop_ph:
+  test rcx, rcx                     ; Check if we've processed all headers
+  jz done_ph
+
+  ; Save important registers before syscall
+  push rdx
+  push rcx
+
+  ; Restore registers after syscall
+  pop rcx
+
+  ; Read the current program header
+  mov rdi, rbx                      ; Offset to the current program header
+  lea rsi, [ph_entry]               ; Buffer to store the program header
+  mov rdx, 64                       ; Read 64 bytes (PH size)
+  call read_at_offset
+
+  pop rdx
+
+  ; Check if the segment is PT_NOTE
+  mov eax, dword [ph_entry]         ; Load Type field (first 4 bytes)
+  cmp eax, 0x4                      ; Compare with PT_NOTE (0x4)
+  jne next_ph
+
+  ; PT_NOTE found: Print the message
+  push rdx
+  push rcx
+  mov rax, 1                        ; syscall: write
+  mov rdi, 1                        ; stdout
+  lea rsi, [note_msg]               ; Message buffer
+  mov rdx, note_len                 ; Message length
+  syscall
+  pop rcx
+  pop rdx
+
+next_ph:
+  add rbx, rdx                      ; Move to the next program header
+  dec rcx                           ; Decrement header count
+  jmp loop_ph
+
+done_ph:
+  ret
+
+; -----------------------------
+; Function: read_at_offset
+; Read data from a specific offset in the file.
+; Arguments:
+;   rdi = offset (start of program header)
+;   rsi = buffer (e.g., ph_entry)
+;   rdx = size (e.g., size of the program header)
+; -----------------------------
+read_at_offset:
+  push r10                          ; Save r10 and r11 (callee-saved registers)
+  push r11
+  push rdx                          ; Save rdx
+  push rcx                          ; Save rcx
+
+  ; Perform lseek to move to the given offset
+  mov rax, 8                        ; syscall: lseek
+  mov r10, [fd]                     ; File descriptor
+  mov r11, rdi                      ; Offset (rdi passed to function)
+  mov rdi, r10                      ; File descriptor
+  mov rsi, r11                      ; Offset
+  xor rdx, rdx                      ; SEEK_SET
+  syscall
+  test rax, rax                     ; Check for errors
+  js error                          ; Jump to error if lseek failed
+
+  ; Perform the read at the current offset
+  mov rax, 0                        ; syscall: read
+  mov rdi, r10                      ; File descriptor
+  mov rsi, ph_entry 
+  mov rdx, 64
+  syscall                           ; Buffer is already in rsi, size in rdx
+  test rax, rax                     ; Check for errors
+  js error
+
+  pop rcx                           ; Restore rcx
+  pop rdx                           ; Restore rdx
+  pop r11                           ; Restore r10 and r11
+  pop r10
+  ret
 ; -----------------------------
 ; Function: write_output
 ; This function writes the content of the buffer to the standard output (stdout).
