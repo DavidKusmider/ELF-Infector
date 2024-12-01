@@ -1,17 +1,28 @@
 section .data
-  pathname db "./", 0   ; filename (terminated with null character)
+  pathname db "./ls", 0   ; filename (terminated with null character)
+  match_msg db "Entry Point Match", 0xA ; Message when e_entry matches
+  match_len equ $ - match_msg           ; Length of the match message
+
+  mismatch_msg db "Entry Point Mismatch", 0xA ; Message when e_entry does not match
+  mismatch_len equ $ - mismatch_msg          ; Length of the mismatch message
+
 
 section .bss
-buffer: resb 4                    ; create a buffer and reserve 4 bytes
+ELF_Header: resb 64                    ; create a variable for the ELF Header and reserve 64 bytes
+e_entry_point: resb 8 
+e_phoff: resb 8 
+e_phentsize: resb 2
+e_phnum: resb 2
 statbuf resb 144                  ; reserve space for the stat struct
 
 section .text
 global _start
 
 _start:
-  call check_if_directory
   call read_file
   call check_ELF_file
+  call save_Important_field_ELF_Header
+  call compare_entry_point
   call write_output
 
   ; Finish the execution successfully
@@ -44,8 +55,8 @@ read_file:
   ; Read the content of the file
   mov rdi, rax          ; move file descriptor returned by 'open' to rdi
   mov rax, 0            ; syscall number for 'read'
-  mov rsi, buffer       ; buffer to store the file content
-  mov rdx, 4            ; number of bytes to read (4 bytes)
+  mov rsi, ELF_Header       ; buffer to store the file content
+  mov rdx, 64            ; number of bytes to read (4 bytes)
   syscall
 
   ; Check if the read was successful
@@ -56,54 +67,84 @@ read_file:
 
 
 ; -----------------------------
-; Function: check_if_directory
-; This function checks if the file is a directory using the 'stat' syscall.
-; If the file is a directory, it jumps to the error handler.
-; -----------------------------
-check_if_directory:
-  mov rax, 4                      ; syscall number for 'stat'
-  mov rdi, pathname                ; pointer to the filename (first argument for 'stat')
-  mov rsi, statbuf                 ; pointer to the stat buffer (second argument)
-  syscall
-
-  ; Check if the syscall was successful
-  cmp rax, 0
-  jl error                        ; if rax < 0, an error occurred (jump to error)
-
-  ; Check the file type: directory (S_IFDIR = 0x4000)
-  mov eax, [statbuf + 0]           ; st_mode is the first field in the stat structure
-  and eax, 0xF000                  ; extract the file type bits
-  cmp eax, 0x4000                  ; compare with S_IFDIR (directory type)
-  je error                         ; if it's a directory, jump to error
-
-  ret                              ; return to caller if not a directory
-
-; -----------------------------
 ; Function: check_ELF_file
 ; This function checks if the file starts with the ELF magic number (0x7f 45 4c 46).
 ; If the file is not an ELF file, it jumps to the error handler.
 ; -----------------------------
 check_ELF_file:
-  mov al, byte [buffer]  ; load the first byte of the buffer into al
+  mov al, byte [ELF_Header]  ; load the first byte of the buffer into al
   cmp al, 0x7f           ; compare with 0x7f (ELF magic number prefix)
   jne error              ; if not equal, jump to error
 
   ; Check the second byte (should be 'E' = 0x45)
-  mov al, byte [buffer + 1]  ; load the second byte of the buffer
+  mov al, byte [ELF_Header + 1]  ; load the second byte of the buffer
   cmp al, 0x45           ; compare with 'E' (0x45 in hex)
   jne error              ; if not equal, jump to error
 
   ; Check the third byte (should be 'L' = 0x4C)
-  mov al, byte [buffer + 2]  ; load the third byte of the buffer
+  mov al, byte [ELF_Header + 2]  ; load the third byte of the buffer
   cmp al, 0x4C           ; compare with 'L' (0x4C in hex)
   jne error              ; if not equal, jump to error
 
   ; Check the fourth byte (should be 'F' = 0x46)
-  mov al, byte [buffer + 3]  ; load the fourth byte of the buffer
+  mov al, byte [ELF_Header + 3]  ; load the fourth byte of the buffer
   cmp al, 0x46           ; compare with 'F' (0x46 in hex)
   jne error              ; if not equal, jump to error
 
   ret                    ; return to caller if ELF file is valid
+
+; -----------------------------
+; Function: save_entry_point
+; This function save the virtual address entry_point from the elf header
+; It uses the 'write' syscall to display the data on the terminal.
+; -----------------------------
+
+save_Important_field_ELF_Header:
+  ; Save e_entry (Entry Point)
+  mov rax, qword [ELF_Header + 0x18] ; Extract the 64-bit entry point
+  mov qword [e_entry_point], rax ; Save it to the `e_entry_point` variable
+
+  ; Save e_phoff (Program Header Table Offset)
+  mov rax, qword [ELF_Header + 0x20] ; Extract the 64-bit program header table offset
+  mov qword [e_phoff], rax       ; Save it to the `e_phoff` variable
+
+  ; Save e_phentsize (Program Header Entry Size)
+  movzx rax, word [ELF_Header + 0x2C] ; Extract the 16-bit entry size
+  mov word [e_phentsize], ax       ; Save it to the `e_phentsize` variable
+
+  ; Save e_phnum (Number of Program Header Entries)
+  movzx rax, word [ELF_Header + 0x2E] ; Extract the 16-bit number of entries
+  mov word [e_phnum], ax          ; Save it to the `e_phnum` variable
+
+  ret                             ; Return to the caller
+
+
+compare_entry_point:
+    ; Compare the saved e_entry_point with a hardcoded value (e.g., 0x5130)
+    mov rax, qword [e_entry_point] ; Load the saved e_entry_point
+    cmp rax, 0x5130               ; Compare it with the expected value
+    je entry_point_match          ; If equal, jump to match label
+    jne entry_point_mismatch      ; Otherwise, jump to mismatch label
+
+entry_point_match:
+    ; Do something when entry point matches
+    ; For example, print "Entry Point Match"
+    mov rax, 1                    ; syscall: write
+    mov rdi, 1                    ; stdout
+    lea rsi, [match_msg]          ; Pointer to the "Match" message
+    mov rdx, match_len            ; Length of the message
+    syscall
+    ret
+
+entry_point_mismatch:
+    ; Do something when entry point does not match
+    ; For example, print "Entry Point Mismatch"
+    mov rax, 1                    ; syscall: write
+    mov rdi, 1                    ; stdout
+    lea rsi, [mismatch_msg]       ; Pointer to the "Mismatch" message
+    mov rdx, mismatch_len         ; Length of the message
+    syscall
+    ret
 
 ; -----------------------------
 ; Function: write_output
@@ -114,8 +155,36 @@ write_output:
   ; Write the buffer content to stdout
   mov rax, 1            ; syscall number for 'write'
   mov rdi, 1            ; file descriptor for stdout (1)
-  mov rsi, buffer       ; buffer containing the data to write
+  mov rsi, ELF_Header       ; buffer containing the data to write
   mov rdx, 4            ; number of bytes to write (4 bytes)
+  syscall
+
+  ; Write the saved entry point for debugging
+  ;mov rax, 1              ; syscall: write
+  ;mov rdi, 1              ; stdout
+  ;lea rsi, [e_entry_point] ; Pointer to entry point
+  ;mov rdx, 8              ; Write 8 bytes
+  ;syscall
+
+; Write the saved entry point for debugging
+  ;mov rax, 1              ; syscall: write
+  ;mov rdi, 1              ; stdout
+  ;lea rsi, [e_phoff] ; Pointer to entry point
+  ;mov rdx, 8              ; Write 8 bytes
+  ;syscall
+
+; Write the saved entry point for debugging
+  mov rax, 1              ; syscall: write
+  mov rdi, 1              ; stdout
+  lea rsi, [e_phentsize] ; Pointer to entry point
+  mov rdx, 2              ; Write 8 bytes
+  syscall
+
+; Write the saved entry point for debugging
+  mov rax, 1              ; syscall: write
+  mov rdi, 1              ; stdout
+  lea rsi, [e_phnum] ; Pointer to entry point
+  mov rdx, 2              ; Write 8 bytes
   syscall
 
   ret                   ; return to caller
