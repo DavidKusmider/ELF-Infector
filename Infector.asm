@@ -16,6 +16,9 @@ section .data
   headerMessage db "Im in a PH segment", 0xA ; Message to print
   headerMessagelen equ $ - headerMessage         ; Message length
 
+  payload db "Nothing happened here ...", 0xA
+  payload_msg_len equ $ - payload
+
 
 section .bss
 ELF_Header: resb 64                    ; ELF header buffer
@@ -231,6 +234,23 @@ loop_ph:
   ; Modify the program header type to PT_LOAD (0x01)
   mov dword [ph_entry], 0x1
 
+  ; Ensure permissions include `R` and `E`
+  mov eax, dword [ph_entry + 0x4]   ; Load p_flags
+  or eax, 0x7                       ; Add R and E permissions
+  mov dword [ph_entry + 0x4], eax   ; Store updated p_flags
+
+  ; Append the payload at the end of the segment
+  mov rax, qword [ph_entry + 0x08]  ; Load p_offset (file offset of segment)
+  add rax, qword [ph_entry + 0x20]  ; Add p_filesz to find the end of the segment
+  mov rdi, rax                      ; Offset to write the payload
+  lea rsi, [rel payload]            ; Payload address
+  mov rdx, payload_msg_len          ; Payload size
+  call write_at_offset              ; Write the payload
+
+  ; Update p_filesz and p_memsz to include the payload
+  add qword [ph_entry + 0x20], payload_msg_len  ; Update p_filesz
+  add qword [ph_entry + 0x28], payload_msg_len  ; Update p_memsz
+
   ; Debug: Print ph_entry buffer after modification
 ;mov rax, 1            ; syscall: write
 ;mov rdi, 1            ; stdout
@@ -245,6 +265,20 @@ loop_ph:
   lea rsi, [ph_entry]               ; Buffer containing the modified program header
   mov rdx, 64                       ; Size of the program header
   call write_at_offset              ; Call the function to write the modified header back
+
+; Update e_entry to point to the payload
+  mov rax, qword [ph_entry + 0x10]  ; Load p_vaddr (virtual address of segment)
+  add rax, qword [ph_entry + 0x20]  ; Add p_filesz to point to the payload
+  mov rdi, 0x18                     ; Offset of e_entry in ELF header
+  mov rsi, ELF_Header               ; Buffer containing ELF header
+  mov qword [rsi + rdi], rax        ; Update e_entry with new entry point
+
+  ; Write the modified ELF header back
+  mov rdi, 0x0                      ; Offset to start of ELF header
+  lea rsi, [ELF_Header]             ; Modified ELF header
+  mov rdx, 64                       ; Size of the ELF header
+  call write_at_offset              ; Write the ELF header back
+
   pop rdx                           ; Restore rdx
   pop rcx                           ; Restore rcx
 
