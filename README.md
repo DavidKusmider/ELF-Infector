@@ -32,7 +32,7 @@ This project is an ELF file infector written in x86_64 assembly. The goal is to 
 3. **Run the ELF Infector**
    Provide a copy of it as the target executable, execute the malware then execute the target executable:
    ```bash
-   cp /usr/bin/ls && ./infector && ./ls
+   cp /usr/bin/ls ./ && ./infector && ./ls
    ```
 ## **Notes**
 - Always test this program in a controlled environment (e.g., a virtual machine or sandbox).
